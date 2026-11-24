@@ -1,0 +1,1 @@
+-- 02_dml.sql - MediCita IPS - Jose Miguel Sandoval

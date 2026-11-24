@@ -1,0 +1,1 @@
+-- 04_funciones.sql - MediCita IPS - Jose Miguel Sandoval

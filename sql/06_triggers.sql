@@ -1,0 +1,1 @@
+-- 06_triggers.sql - MediCita IPS - Jose Miguel Sandoval

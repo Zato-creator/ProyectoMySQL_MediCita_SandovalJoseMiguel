@@ -1,0 +1,1 @@
+-- 07_eventos.sql - MediCita IPS - Jose Miguel Sandoval
