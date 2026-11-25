@@ -1,4 +1,3 @@
-# ProyectoMySQL_MediCita_SandovalJoseMiguel
 # MediCita IPS · Base de datos
 
 **Autor:** Jose Miguel Sandoval
@@ -14,29 +13,39 @@ En octubre de 2026 pasaron tres problemas:
 2. A una paciente se le formuló un medicamento al que es alérgica.
 3. La cartera con una aseguradora no cuadró por más de 3 millones.
 
-Este proyecto construye la base de datos del nuevo sistema. Incluye el modelo, la estructura, datos de prueba, consultas, funciones, procedimientos, triggers, eventos y permisos por rol. Así esos tres problemas quedan controlados por la propia base de datos.
+En este proyecto construí la base de datos del nuevo sistema. Incluye el modelo, la estructura, datos de prueba, consultas, funciones, procedimientos, triggers, eventos y permisos por rol. Mi objetivo fue que esos tres problemas quedaran controlados por la propia base de datos y no dependieran de que alguien revise a mano.
 
 ## 2. Cómo ejecutarlo
 
-Ejecuta los scripts en este orden sobre un servidor MySQL 8 que no tenga la base `medicita_ips`. Desde la terminal, en la carpeta del proyecto:
+Requisitos: MySQL Server 8 y el reloj de eventos encendido (`SET GLOBAL event_scheduler = ON;`).
+
+Desde la terminal (PowerShell), en la carpeta del proyecto, entra a MySQL como root:
 
 ```
-mysql -u root -p < sql/01_ddl.sql
-mysql -u root -p < sql/02_dml.sql
-mysql -u root -p < sql/03_dql.sql
-mysql -u root -p < sql/04_funciones.sql
-mysql -u root -p < sql/05_procedimientos.sql
-mysql -u root -p < sql/06_triggers.sql
-mysql -u root -p < sql/07_eventos.sql
-mysql -u root -p < sql/08_dcl.sql
+mysql -u root -p --default-character-set=utf8mb4
 ```
 
-> `01_ddl.sql` empieza con `DROP DATABASE IF EXISTS medicita_ips;`, así que se puede ejecutar las veces que sea necesario.
-> Las sentencias que deben fallar a propósito están marcadas con `-- ⚠️ ESPERADO: ERROR <código>`. Para que el script siga después de esos errores, ejecútalo con `mysql -u root -p --force < archivo.sql`.
+Dentro de `mysql>`, ejecuta los scripts en este orden:
+
+```
+SOURCE sql/01_ddl.sql;
+SOURCE sql/02_dml.sql;
+SOURCE sql/03_dql.sql;
+SOURCE sql/04_funciones.sql;
+SOURCE sql/05_procedimientos.sql;
+SOURCE sql/06_triggers.sql;
+SOURCE sql/07_eventos.sql;
+SOURCE sql/08_dcl.sql;
+```
+
+- `01_ddl.sql` empieza con `DROP DATABASE IF EXISTS medicita_ips;`, así que se puede repetir las veces que sea necesario.
+- Las sentencias que deben fallar a propósito están marcadas con `-- ⚠️ ESPERADO: ERROR <código>`. `SOURCE` muestra el error y sigue con la siguiente sentencia. En total son 35: 4 en el DML, 1 en funciones, 14 en procedimientos, 12 en triggers y 4 en DCL.
+- El orden importa: los procedimientos usan las funciones, T-3 se prueba con `sp_cancelar_cita` y el DCL da permisos sobre rutinas que ya deben existir.
+- `07_eventos.sql` tarda unos 20 segundos, porque espera con `SELECT SLEEP(4);` a que corra cada evento.
 
 ## 3. Reglas corroboradas
 
-Comparé cada regla del análisis preliminar con lo que dijeron los tres entrevistados: Dra. Marcela Ortiz (directora médica), Hernán Rueda (agendamiento) y Liliana Prada (facturación).
+Antes de diseñar, comparé cada regla del análisis preliminar con lo que dijeron los tres entrevistados: Dra. Marcela Ortiz (directora médica), Hernán Rueda (agendamiento) y Liliana Prada (facturación).
 
 | Regla | ¿Se confirma? | Evidencia (quién lo dijo) | Corrección |
 | --- | --- | --- | --- |
@@ -110,27 +119,118 @@ Ahora agregar una sede es una sola fila, y la combinación válida se obtiene co
 
 ## 5. Diagramas
 
-_(Pendiente: Paso 4 y Paso 5)_
+### 5.1 Diagrama entidad-relación hecho a mano
 
-- Diagrama entidad-relación hecho a mano: `diagramas/00_diagrama_er.jpg`
-- Diagrama lógico por ingeniería inversa: `diagramas/00_diagrama_logico.png`
+![Diagrama E-R hecho a mano](diagramas/00_diagrama_er.jpg)
 
-## 6. Reglas que no protege la estructura
+### 5.2 Diagrama lógico por ingeniería inversa
 
-_(Pendiente: se completa en la fase 5)_
+Se generó con **MySQL Workbench 8.0 → Database → Reverse Engineer** después de ejecutar `01_ddl.sql`. Tiene las 46 tablas y sus 58 llaves foráneas, y coincide con el DDL y con el diagrama a mano.
+
+![Diagrama lógico](diagramas/00_diagrama_logico.png)
+
+## 6. Reglas que no protege la estructura y dónde se resolvieron
+
+Un `CHECK` solo ve **una fila**. Las reglas que comparan varias filas o varias tablas se resolvieron así:
+
+| Regla | Objeto |
+|---|---|
+| Un médico no tiene dos citas que se crucen (RP-06) | `fn_medico_disponible` + `sp_agendar_cita` |
+| Un consultorio no tiene dos citas que se crucen | `sp_agendar_cita` (validación 4) |
+| No se agenda fuera del horario ni durante novedades (RP-07) | `fn_medico_disponible` |
+| La cita es con una especialidad del médico y en una sede donde atiende | `sp_agendar_cita` (validaciones 1 y 2) |
+| Solo una afiliación ACTIVA por paciente (RP-10) | `trg_affiliations_before_insert` / `_before_update` |
+| La cancelación lleva un motivo del catálogo (RP-08) | `CHECK` en `appointments` + `sp_cancelar_cita` |
+| Cada cambio de estado queda en el historial (RP-09) | `trg_appointments_after_update` (T-3) |
+| No se formula un principio activo al que el paciente es alérgico (RP-12) | `trg_prescription_items_before_insert` (T-5) |
+| El precio es el de la tarifa vigente el día de la atención (RP-13) | `fn_tarifa_vigente` + `sp_facturar_atencion` |
+| Las vigencias de una tarifa no se cruzan | `trg_tariffs_before_insert` |
+| La factura no se borra, se anula (RP-14) | `trg_invoices_before_delete` (T-2) + `sp_anular_factura` |
+| PARCIAL o PAGADA según los abonos (RP-15) | `trg_payments_after_insert` (T-4) |
+| No se abona a una factura anulada o pagada, ni por más del saldo | `trg_payments_before_insert` |
+| VENCIDA a los 30 días sin pagar completa | `evt_marcar_facturas_vencidas_diario` (E-4) |
+| Solo se encuestan citas ATENDIDA | `trg_surveys_before_insert` |
+| Los signos vitales tienen rangos posibles | `CHECK` en el DDL + T-1 (mensaje en español) |
+
+> Nota sobre el nombre de un trigger: el enunciado los nombra con la tabla, y las tablas del DDL se llaman igual (`vital_signs`, `invoices`, `appointments`, `payments`, `prescription_items`), así que **ningún nombre de trigger cambió**. La tabla de encuestas se llama `surveys`, por eso su trigger de apoyo es `trg_surveys_before_insert`.
 
 ## 7. Características de cada función
 
-_(Pendiente: Paso 8)_
+| Función | Características | Por qué |
+|---|---|---|
+| `fn_edad` | `DETERMINISTIC`, `NO SQL` | Solo calcula con las dos fechas que recibe; las mismas fechas siempre dan la misma edad |
+| `fn_imc` | `DETERMINISTIC`, `NO SQL` | Es una fórmula sobre sus parámetros; no lee tablas |
+| `fn_tarifa_vigente` | `NOT DETERMINISTIC`, `READS SQL DATA` | Lee `tariffs`; si alguien cambia una tarifa, la misma entrada da otro precio |
+| `fn_saldo_factura` | `NOT DETERMINISTIC`, `READS SQL DATA` | Lee `invoices` y `payments`; el saldo cambia con cada abono |
+| `fn_medico_disponible` | `NOT DETERMINISTIC`, `READS SQL DATA` | Lee horarios, novedades y citas; cambia cada vez que se agenda o cancela |
+
+Si no se declaran, MySQL responde **ERROR 1418** porque el binary log está activo.
 
 ## 8. Roles y permisos
 
-_(Pendiente: Paso 12)_
+| Rol | Puede | No puede (evidencia en 08_dcl.sql) |
+|---|---|---|
+| `rol_recepcion` | `SELECT` de pacientes, médicos, agenda y catálogos; `EXECUTE` de `sp_registrar_paciente`, `sp_agendar_cita`, `sp_cancelar_cita` | `UPDATE appointments` → **1142**; ver diagnósticos o facturas → **1142**; `CALL sp_facturar_atencion` → **1370** |
+| `rol_medico` | `SELECT` de pacientes, agenda y tablas clínicas; `INSERT` de atenciones, signos, diagnósticos, fórmulas y laboratorio; `UPDATE (status)` de la cita | Ver facturas → **1142**; `DELETE` de datos clínicos → **1142** |
+| `rol_facturacion` | `SELECT` de atenciones, tarifas y facturación; `INSERT` de abonos; `EXECUTE` de `sp_facturar_atencion`, `sp_anular_factura`, `sp_reporte_produccion` | `UPDATE invoices` → **1142**; `DELETE invoices` → **1142**; ver fórmulas → **1142**; agendar → **1370** |
+| `rol_auditor` | `SELECT` de todas las tablas; en `patients` solo por columnas (sin documento, dirección ni correo) | `SELECT document_number` → **1143**; teléfonos → **1142**; `UPDATE` → **1142** |
+| `rol_admin_bd` | `ALL PRIVILEGES ON medicita_ips.*` | Leer `mysql.user` → **1142**; crear otra base → **1044** |
+
+**Por qué funciona "solo con los procedimientos":** los procedimientos son `SQL SECURITY DEFINER` (el valor por defecto) y corren con los permisos de root, que fue quien los creó. Recepción tiene `EXECUTE` sobre `sp_agendar_cita`, pero no `INSERT` sobre `appointments`: puede agendar, y solo de la forma controlada.
 
 ## 9. Evidencias
 
-_(Pendiente: capturas de 3 consultas, 1 procedimiento, 1 trigger y 1 evento)_
+### Consultas
 
-## 10. Conclusiones
+![Consulta 9: agenda del 1 de diciembre](capturas/consulta_09.png)
 
-_(Pendiente)_
+![Consulta 19: cartera por aseguradora](capturas/consulta_19.png)
+
+![Consulta 30: diagnósticos más frecuentes por sede](capturas/consulta_30.png)
+
+### Procedimiento
+
+`CALL sp_reporte_produccion('2026-11-01', '2026-11-30');`
+
+![Procedimiento sp_reporte_produccion](capturas/procedimiento.png)
+
+### Trigger
+
+T-5 rechaza formular ibuprofeno a un paciente alérgico (ERROR 1644) y deja pasar un medicamento seguro.
+
+![Trigger de alergias](capturas/trigger.png)
+
+### Evento
+
+E-1 pasa a NO_ASISTIO las citas que empezaron antes del corte y deja su historial.
+
+![Evento de inasistencias](capturas/evento.png)
+
+## 10. Cómo trabajé el proyecto
+
+Desarrollé el proyecto en Visual Studio Code, con MySQL 8.4 en Windows. Este fue el proceso y los problemas que tuve que resolver:
+
+| Etapa | Qué hice | Problema y cómo lo resolví |
+| --- | --- | --- |
+| Análisis | Leí el enunciado y comparé las 15 reglas con las entrevistas. | Encontré 6 reglas mal entendidas y 13 que faltaban (sección 3). |
+| Entorno | Instalé MySQL 8.4, configuré VS Code y creé el repositorio. | `mysql` no se reconocía en PowerShell. Agregué `C:\Program Files\MySQL\MySQL Server 8.4\bin` al PATH. |
+| Modelo | Empecé el modelo en DrawSQL. | Al importar el script solo entraron unas 25 de las 46 tablas y sin llaves foráneas, por el límite del plan gratuito. Decidí usar DrawSQL solo como borrador. |
+| Diagrama lógico | Ejecuté `01_ddl.sql` y generé el diagrama por ingeniería inversa. | El Workbench nuevo (26.10) ya no trae *Reverse Engineer*. Instalé Workbench 8.0.47 y desde ahí lo generé. |
+| Ejecución | Corrí los scripts desde la terminal. | En PowerShell no funciona `mysql < archivo.sql`, y con `-e "source …"` el script se detiene en el primer error esperado. Por eso los ejecuto con `SOURCE` dentro de `mysql>`. |
+| Pruebas | Cargué los scripts 04 a 08. | La primera vez respondieron `Query OK, 0 rows affected` al instante: los archivos seguían vacíos. Los completé, los volví a ejecutar y verifiqué los errores esperados. |
+| Evidencias | Tomé las capturas de la sección 9. | — |
+
+### Uso de inteligencia artificial
+
+Usé un asistente de IA (Claude) como tutor durante el proyecto. Me explicó cada fase paso a paso, me propuso borradores del código SQL y de este README y me ayudó a resolver los errores de instalación. Yo instalé y configuré las herramientas, tomé las decisiones de qué usar cuando algo no funcionó, ejecuté y probé cada script en mi equipo y revisé los resultados.
+
+### Qué aprendí
+
+Como desarrollar el modelo E - R, la estructura de una base de datos. a realizar creacion de tablas desde visual studio, tambien a crear las tablas en DrawSql, a realikzar consultas, funciones, restricciones y a organizarla de forma correcta y cohereente tambien cada ves mas estoy a prendiendo como usar la AI a mi favor para desarrolar este tipo de proyectos.
+
+## 11. Conclusiones
+
+- Corroborar las reglas contra las entrevistas antes de diseñar cambió mi modelo. Seis de las quince reglas preliminares estaban mal entendidas; si las hubiera modelado tal cual, la base habría repetido los errores de octubre.
+- Comprobé que la estructura (PK, FK, UNIQUE, CHECK y ENUM) solo protege las reglas de una fila. Las que comparan varias filas, como el cruce de citas, la alergia o la tarifa del día, necesitaron funciones, procedimientos y triggers.
+- Los tres problemas de octubre quedaron controlados por la base: `sp_agendar_cita` impide citas cruzadas, T-5 bloquea medicamentos a los que el paciente es alérgico, y la cartera cuadra porque el precio se copia en la factura y los estados los ponen T-4 y E-4.
+- Con roles y procedimientos `SQL SECURITY DEFINER`, cada área solo puede hacer lo que le corresponde y de la forma controlada.
